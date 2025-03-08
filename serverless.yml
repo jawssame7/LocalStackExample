@@ -1,0 +1,154 @@
+service: localstack-aws-example
+
+frameworkVersion: '3'
+
+plugins:
+  - serverless-plugin-typescript
+  - serverless-localstack
+  - serverless-offline
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  stage: ${opt:stage, 'dev'}
+  region: ap-northeast-1
+  environment:
+    NODE_ENV: ${self:provider.stage}
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - dynamodb:*
+        - s3:*
+        - sqs:*
+      Resource: '*'
+  timeout: 30
+
+custom:
+  localstack:
+    stages:
+      - local
+    host: http://localhost
+    edgePort: 4566
+    autostart: true
+    debug: true
+
+  tableName: 'tasks-table-${self:provider.stage}'
+  bucketName: 'files-bucket-${self:provider.stage}'
+  queueName: 'tasks-queue-${self:provider.stage}'
+
+  s3:
+    host: localhost
+    directory: ./tmp
+
+functions:
+  apiHandler:
+    handler: src/handlers/api.handler
+    events:
+      - http:
+          path: /api
+          method: any
+          cors: true
+
+  createTask:
+    handler: src/handlers/tasks.create
+    events:
+      - http:
+          path: /tasks
+          method: post
+          cors: true
+
+  getTask:
+    handler: src/handlers/tasks.get
+    events:
+      - http:
+          path: /tasks/{id}
+          method: get
+          cors: true
+
+  listTasks:
+    handler: src/handlers/tasks.list
+    events:
+      - http:
+          path: /tasks
+          method: get
+          cors: true
+
+  updateTask:
+    handler: src/handlers/tasks.update
+    events:
+      - http:
+          path: /tasks/{id}
+          method: put
+          cors: true
+
+  deleteTask:
+    handler: src/handlers/tasks.remove
+    events:
+      - http:
+          path: /tasks/{id}
+          method: delete
+          cors: true
+
+  uploadFile:
+    handler: src/handlers/files.upload
+    events:
+      - http:
+          path: /files
+          method: post
+          cors: true
+
+  processQueue:
+    handler: src/handlers/queue.process
+    events:
+      - sqs:
+          arn: !GetAtt TasksQueue.Arn
+          batchSize: 1
+
+resources:
+  Resources:
+    TasksTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Delete
+      Properties:
+        TableName: ${self:custom.tableName}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+          - AttributeName: createdAt
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: createdAt-index
+            KeySchema:
+              - AttributeName: createdAt
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+
+    FilesBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:custom.bucketName}
+        CorsConfiguration:
+          CorsRules:
+            - AllowedOrigins:
+                - '*'
+              AllowedHeaders:
+                - '*'
+              AllowedMethods:
+                - GET
+                - PUT
+                - POST
+                - DELETE
+                - HEAD
+              MaxAge: 3000
+
+    TasksQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:custom.queueName}
+        VisibilityTimeout: 30
+        MessageRetentionPeriod: 60
