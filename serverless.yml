@@ -14,6 +14,17 @@ provider:
   region: ap-northeast-1
   environment:
     NODE_ENV: ${self:provider.stage}
+    # AWS環境変数の設定（予約語を避けた名前に変更）
+    MY_AWS_ACCOUNT_ID: !Ref AWS::AccountId
+    MY_AWS_REGION: ${self:provider.region}
+    # 各リソース名を環境変数として設定
+    TASKS_TABLE: ${self:custom.tableName}
+    FILES_BUCKET: ${self:custom.bucketName}
+    TASKS_QUEUE: ${self:custom.queueName}
+    # SQSキューURLの設定
+    TASKS_QUEUE_URL: !Sub 'https://sqs.${AWS::Region}.amazonaws.com/${AWS::AccountId}/${self:custom.queueName}'
+    # 強制的に本番モードを指定（LocalStackエンドポイントを無効化）
+    IS_PRODUCTION: 'true'
   iamRoleStatements:
     - Effect: Allow
       Action:
@@ -33,12 +44,33 @@ custom:
     debug: true
 
   tableName: 'tasks-table-${self:provider.stage}'
-  bucketName: 'files-bucket-${self:provider.stage}'
+  bucketName: 'files-bucket-${self:provider.stage}-${self:custom.uniqueSuffix}'
   queueName: 'tasks-queue-${self:provider.stage}'
+  uniqueSuffix: 'xyz123'
 
   s3:
     host: localhost
     directory: ./tmp
+
+  deletionPolicy: ${self:custom.stageToDeletionPolicy.${self:provider.stage}, 'Delete'}
+  stageToDeletionPolicy:
+    prod: 'Retain'
+    staging: 'Retain'
+
+  # リソースのスキップ制御
+  resourceConfig:
+    skipTasksTable: ${opt:skip-tasks-table, false}
+    skipFilesBucket: ${opt:skip-files-bucket, false}
+    skipTasksQueue: ${opt:skip-tasks-queue, false}
+
+  # リソース作成の条件制御
+  shouldCreateResources:
+    # デフォルトはtrue、--no-create-resourcesフラグでfalseに設定可能
+    createResources: ${opt:create-resources, true}
+    # オプションでリソース個別の制御も可能
+    createTasksTable: ${opt:create-tasks-table, true}
+    createFilesBucket: ${opt:create-files-bucket, true}
+    createTasksQueue: ${opt:create-tasks-queue, true}
 
 functions:
   apiHandler:
@@ -105,10 +137,29 @@ functions:
           batchSize: 1
 
 resources:
+  # 条件定義（正しいCloudFormation構文を使用）
+  Conditions:
+    ShouldCreateTasksTable:
+      Fn::Not:
+        - Fn::Equals:
+            - ${self:custom.resourceConfig.skipTasksTable}
+            - true
+    ShouldCreateFilesBucket:
+      Fn::Not:
+        - Fn::Equals:
+            - ${self:custom.resourceConfig.skipFilesBucket}
+            - true
+    ShouldCreateTasksQueue:
+      Fn::Not:
+        - Fn::Equals:
+            - ${self:custom.resourceConfig.skipTasksQueue}
+            - true
+
   Resources:
     TasksTable:
       Type: AWS::DynamoDB::Table
-      DeletionPolicy: Delete
+      DeletionPolicy: ${self:custom.deletionPolicy, 'Delete'}
+      Condition: ShouldCreateTasksTable
       Properties:
         TableName: ${self:custom.tableName}
         BillingMode: PAY_PER_REQUEST
@@ -130,6 +181,8 @@ resources:
 
     FilesBucket:
       Type: AWS::S3::Bucket
+      DeletionPolicy: ${self:custom.deletionPolicy, 'Delete'}
+      Condition: ShouldCreateFilesBucket
       Properties:
         BucketName: ${self:custom.bucketName}
         CorsConfiguration:
@@ -148,6 +201,8 @@ resources:
 
     TasksQueue:
       Type: AWS::SQS::Queue
+      DeletionPolicy: ${self:custom.deletionPolicy, 'Delete'}
+      Condition: ShouldCreateTasksQueue
       Properties:
         QueueName: ${self:custom.queueName}
         VisibilityTimeout: 30
